@@ -50,13 +50,7 @@ aww "python3 /path/to/task.py"
 如果你希望启动后立刻进入交互 session，用：
 
 ```bash
-awx "codex"
-```
-
-如果你想对比状态栏 HUD，用：
-
-```bash
-awxbar "codex"
+awx
 ```
 
 说明：
@@ -69,7 +63,7 @@ awxbar "codex"
 - 默认参数：
   - `soft_timeout=300`
   - `hard_timeout=900`
-  - `poll_interval=5`
+  - `poll_interval=1`
   - `max_restarts=3`
 
 ### 2. 可选环境变量
@@ -90,10 +84,26 @@ AWW_TASK_NAME="首页重构" AWW_MAX_RESTARTS=5 aww "python3 /path/to/task.py"
 
 - `aww "命令"`
   启动托管任务，但不自动进入 session
-- `awx "命令"`
-  启动托管任务后，立刻 `tmux attach`，并分一个 HUD pane
-- `awxbar "命令"`
+- `awx [命令]`
   启动托管任务后，立刻 `tmux attach`，并把 HUD 放进 `tmux status-right`
+
+当前推荐：
+
+- `aww` 适合只启动，不立刻 attach
+- `awx` 适合 attach 后用 `tmux status-right` 看状态；不传命令时默认执行 `codex`
+- `awx` 绑定当前终端生命周期：直接关闭终端或 Warp 标签页后，tmux session 和任务会一起结束，不会继续在后台挂着
+- `awxbar` 仅保留为兼容别名，后续不再继续维护
+
+`awx` 的状态栏默认展示：
+
+- 命令摘要
+- 当前状态
+- 当前阶段
+- 运行时长与未响应时长
+- 重启次数
+- 不展示通用任务名，例如 `Agent 任务`
+- 不展示“当前任务细节”多行区块
+- `awxbar "codex"` 等价于 `awx "codex"`，但会提示已废弃
 
 ### 4. 高级用法
 
@@ -131,6 +141,11 @@ bash /Users/zhang/Desktop/agent-watchdog/scripts/restart.sh
 ```
 
 它会读取 `runtime/launch.json`，保留当前失败现场后再新建一个 session。
+
+说明：
+
+- 自动重启仍然由 `watchdog` 在 `failed / stopped / stalled` 等可恢复状态下触发
+- `restart.sh` 只是给你手动触发同一条重启链路
 
 ## 关键运行文件
 

@@ -8,27 +8,28 @@ STATUS_SCRIPT="$BASE_DIR/scripts/status.py"
 
 SOFT_TIMEOUT="${AWW_SOFT_TIMEOUT:-300}"
 HARD_TIMEOUT="${AWW_HARD_TIMEOUT:-900}"
-POLL_INTERVAL="${AWW_POLL_INTERVAL:-5}"
+POLL_INTERVAL="${AWW_POLL_INTERVAL:-1}"
 MAX_RESTARTS="${AWW_MAX_RESTARTS:-3}"
 TASK_NAME="${AWW_TASK_NAME:-Agent 任务}"
 SESSION_PREFIX="${AWW_SESSION_PREFIX:-agent}"
 SOURCE="${AWW_SOURCE:-awx}"
 PROJECT="${AWW_PROJECT:-$PWD}"
 STAGE_RULES="${AWW_STAGE_RULES:-$BASE_DIR/config/stage-rules.json}"
-HUD_INTERVAL="${AWX_HUD_INTERVAL:-2}"
+STATUS_INTERVAL="${AWX_STATUS_INTERVAL:-2}"
 
 usage() {
   cat <<'EOF'
 用法:
-  awx "你的命令"
+  awx [你的命令]
 
 示例:
-  awx "codex"
+  awx
+  awx codex
   awx "python3 app.py"
 
 行为:
   1. 启动 tmux + watchdog
-  2. 自动分一个 HUD pane
+  2. 把 HUD 挂到 tmux 状态栏
   3. 自动 attach 到新 session
 
 可选环境变量:
@@ -45,17 +46,16 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if [[ $# -lt 1 ]]; then
-  usage
-  exit 1
-fi
-
 if [[ ! -x "$TMUX_LAUNCH_SCRIPT" ]]; then
   echo "错误：未找到 tmux 启动脚本：$TMUX_LAUNCH_SCRIPT"
   exit 1
 fi
 
-COMMAND="$*"
+if [[ $# -eq 0 ]]; then
+  COMMAND="codex"
+else
+  COMMAND="$*"
+fi
 TASK_ID="awx-$(date '+%Y%m%d-%H%M%S')"
 
 echo "启动 awx 任务"
@@ -71,6 +71,7 @@ bash "$TMUX_LAUNCH_SCRIPT" \
   --hard-timeout "$HARD_TIMEOUT" \
   --poll-interval "$POLL_INTERVAL" \
   --max-restarts "$MAX_RESTARTS" \
+  --destroy-unattached on \
   --source "$SOURCE" \
   --project "$PROJECT" \
   --stage-rules "$STAGE_RULES"
@@ -86,18 +87,40 @@ import json
 from pathlib import Path
 
 launch = json.loads(Path("/Users/zhang/Desktop/agent-watchdog/runtime/launch.json").read_text(encoding="utf-8"))
-print(launch.get("session_name", ""))
+print(f"{launch.get('session_name', '')}\t{launch.get('runtime_dir', '')}")
 PY
 )"
+
+SESSION_RUNTIME_DIR="${SESSION_NAME#*$'\t'}"
+SESSION_NAME="${SESSION_NAME%%$'\t'*}"
 
 if [[ -z "$SESSION_NAME" ]]; then
   echo "错误：launch.json 中没有 session_name"
   exit 1
 fi
 
+if [[ -z "$SESSION_RUNTIME_DIR" ]]; then
+  echo "错误：launch.json 中没有 runtime_dir"
+  exit 1
+fi
+
+tmux set-option -t "$SESSION_NAME" mouse on >/dev/null
+tmux set-option -t "$SESSION_NAME" history-limit 50000 >/dev/null
+tmux set-option -t "$SESSION_NAME" @awx-wheel-scroll on >/dev/null
+tmux bind-key -T root WheelUpPane if-shell -F '#{@awx-wheel-scroll}' \
+  'select-pane -t=; if-shell -F "#{pane_in_mode}" "send-keys -M" "copy-mode -e; send-keys -M"' \
+  'send-keys -M' >/dev/null
+tmux bind-key -T root WheelDownPane if-shell -F '#{@awx-wheel-scroll}' \
+  'select-pane -t=; if-shell -F "#{pane_in_mode}" "send-keys -M" ""' \
+  'send-keys -M' >/dev/null
+tmux set-hook -t "$SESSION_NAME" client-detached \
+  "run-shell 'bash $BASE_DIR/scripts/tmux_client_detached_cleanup.sh #{session_name}'" >/dev/null
+tmux set-option -t "$SESSION_NAME" status on >/dev/null
+tmux set-option -t "$SESSION_NAME" status-interval "$STATUS_INTERVAL" >/dev/null
+tmux set-option -t "$SESSION_NAME" status-left-length 0 >/dev/null
+tmux set-option -t "$SESSION_NAME" status-right-length 120 >/dev/null
+tmux set-option -t "$SESSION_NAME" status-left "" >/dev/null
+tmux set-option -t "$SESSION_NAME" status-right "#($STATUS_SCRIPT --line --runtime-dir '$SESSION_RUNTIME_DIR')" >/dev/null
+
 echo "attach 到 session: $SESSION_NAME"
-tmux split-window -v -t "${SESSION_NAME}:0.0" \
-  "python3 '$STATUS_SCRIPT' --watch --interval '$HUD_INTERVAL'"
-tmux resize-pane -t "${SESSION_NAME}:0.1" -y 12
-tmux select-pane -t "${SESSION_NAME}:0.0"
 exec tmux attach -t "$SESSION_NAME"

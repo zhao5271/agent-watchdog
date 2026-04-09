@@ -2,34 +2,20 @@
 set -euo pipefail
 
 BASE_DIR="/Users/zhang/Desktop/agent-watchdog"
-TMUX_LAUNCH_SCRIPT="$BASE_DIR/scripts/tmux_launch.sh"
-LAUNCH_FILE="$BASE_DIR/runtime/launch.json"
-STATUS_SCRIPT="$BASE_DIR/scripts/status.py"
-
-SOFT_TIMEOUT="${AWW_SOFT_TIMEOUT:-300}"
-HARD_TIMEOUT="${AWW_HARD_TIMEOUT:-900}"
-POLL_INTERVAL="${AWW_POLL_INTERVAL:-5}"
-MAX_RESTARTS="${AWW_MAX_RESTARTS:-3}"
-TASK_NAME="${AWW_TASK_NAME:-Agent 任务}"
-SESSION_PREFIX="${AWW_SESSION_PREFIX:-agent}"
-SOURCE="${AWW_SOURCE:-awxbar}"
-PROJECT="${AWW_PROJECT:-$PWD}"
-STAGE_RULES="${AWW_STAGE_RULES:-$BASE_DIR/config/stage-rules.json}"
-STATUS_INTERVAL="${AWX_STATUS_INTERVAL:-2}"
+AWX_SCRIPT="$BASE_DIR/scripts/awx"
 
 usage() {
   cat <<'EOF'
 用法:
-  awxbar "你的命令"
+  awxbar [你的命令]
 
 示例:
+  awxbar
   awxbar "codex"
   awxbar "python3 app.py"
 
 行为:
-  1. 启动 tmux + watchdog
-  2. 把 HUD 挂到 tmux 状态栏
-  3. 自动 attach 到新 session
+  已废弃。请改用 awx。
 EOF
 }
 
@@ -38,52 +24,15 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if [[ $# -lt 1 ]]; then
-  usage
+if [[ ! -x "$AWX_SCRIPT" ]]; then
+  echo "错误：未找到 awx 脚本：$AWX_SCRIPT"
   exit 1
 fi
 
-COMMAND="$*"
-TASK_ID="awxbar-$(date '+%Y%m%d-%H%M%S')"
+echo "提示：awxbar 已废弃，请改用 awx。"
 
-echo "启动 awxbar 任务"
-echo "任务ID: $TASK_ID"
-echo "命令: $COMMAND"
-
-bash "$TMUX_LAUNCH_SCRIPT" \
-  --task-id "$TASK_ID" \
-  --task-name "$TASK_NAME" \
-  --command "$COMMAND" \
-  --session-prefix "$SESSION_PREFIX" \
-  --soft-timeout "$SOFT_TIMEOUT" \
-  --hard-timeout "$HARD_TIMEOUT" \
-  --poll-interval "$POLL_INTERVAL" \
-  --max-restarts "$MAX_RESTARTS" \
-  --source "$SOURCE" \
-  --project "$PROJECT" \
-  --stage-rules "$STAGE_RULES"
-
-SESSION_NAME="$(
-  python3 - <<'PY'
-import json
-from pathlib import Path
-
-launch = json.loads(Path("/Users/zhang/Desktop/agent-watchdog/runtime/launch.json").read_text(encoding="utf-8"))
-print(launch.get("session_name", ""))
-PY
-)"
-
-if [[ -z "$SESSION_NAME" ]]; then
-  echo "错误：launch.json 中没有 session_name"
-  exit 1
+if [[ $# -eq 0 ]]; then
+  exec "$AWX_SCRIPT"
 fi
 
-tmux set-option -t "$SESSION_NAME" status on >/dev/null
-tmux set-option -t "$SESSION_NAME" status-interval "$STATUS_INTERVAL" >/dev/null
-tmux set-option -t "$SESSION_NAME" status-left-length 0 >/dev/null
-tmux set-option -t "$SESSION_NAME" status-right-length 120 >/dev/null
-tmux set-option -t "$SESSION_NAME" status-left "" >/dev/null
-tmux set-option -t "$SESSION_NAME" status-right "#($STATUS_SCRIPT --line)" >/dev/null
-
-echo "attach 到 session: $SESSION_NAME"
-exec tmux attach -t "$SESSION_NAME"
+exec "$AWX_SCRIPT" "$@"

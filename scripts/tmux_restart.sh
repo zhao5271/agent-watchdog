@@ -4,7 +4,10 @@ set -euo pipefail
 BASE_DIR="/Users/zhang/Desktop/agent-watchdog"
 RUNTIME_DIR="$BASE_DIR/runtime"
 TASK_RUNNER_SCRIPT="$BASE_DIR/scripts/tmux_task_runner.sh"
-LAUNCH_FILE="$RUNTIME_DIR/launch.json"
+TOOL_ACTIVITY_WRAPPER_SCRIPT="$BASE_DIR/scripts/tool_activity_wrapper.py"
+SESSION_RUNTIME_DIR="$RUNTIME_DIR"
+LAUNCH_FILE=""
+LATEST_LAUNCH_FILE="$RUNTIME_DIR/launch.json"
 
 ARCHIVE_SESSION=""
 REASON="manual"
@@ -29,6 +32,10 @@ parse_args() {
         REASON="$2"
         shift 2
         ;;
+      --runtime-dir)
+        SESSION_RUNTIME_DIR="$2"
+        shift 2
+        ;;
       -h|--help)
         usage
         exit 0
@@ -43,6 +50,7 @@ parse_args() {
 }
 
 load_launch_metadata() {
+  LAUNCH_FILE="$SESSION_RUNTIME_DIR/launch.json"
   if [[ ! -f "$LAUNCH_FILE" ]]; then
     echo "未找到 launch.json"
     exit 1
@@ -97,16 +105,20 @@ from pathlib import Path
 import subprocess
 
 base_dir = Path("/Users/zhang/Desktop/agent-watchdog")
-runtime_dir = base_dir / "runtime"
+runtime_dir = Path(os.environ.get("SESSION_RUNTIME_DIR_ENV", str(base_dir / "runtime")))
 launch_file = runtime_dir / "launch.json"
+latest_launch_file = base_dir / "runtime" / "launch.json"
 runner = base_dir / "scripts" / "tmux_task_runner.sh"
+tool_activity_wrapper = base_dir / "scripts" / "tool_activity_wrapper.py"
 launch = json.loads(launch_file.read_text(encoding="utf-8"))
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 safe_task_id = "".join(ch.lower() if ch.isalnum() or ch in "-_" else "-" for ch in launch["task_id"]).strip("-") or "task"
 session_name = f'{launch.get("session_prefix", "agent")}-{safe_task_id}-{timestamp}'
 log_path = str(runtime_dir / f"{safe_task_id}-{timestamp}.log")
+tool_activity_path = str(runtime_dir / "tool_activity.jsonl")
 Path(log_path).write_text("", encoding="utf-8")
+Path(tool_activity_path).write_text("", encoding="utf-8")
 
 command_b64 = base64.b64encode(launch["command"].encode("utf-8")).decode("ascii")
 
@@ -115,8 +127,32 @@ subprocess.run(
     check=True,
 )
 subprocess.run(["tmux", "set-option", "-t", session_name, "remain-on-exit", "on"], check=True, stdout=subprocess.DEVNULL)
+subprocess.run(
+    ["tmux", "set-option", "-t", session_name, "remain-on-exit", "on"],
+    check=True,
+    stdout=subprocess.DEVNULL,
+)
+if launch.get("destroy_unattached"):
+    cleanup_script = base_dir / "scripts" / "tmux_client_detached_cleanup.sh"
+    subprocess.run(
+        [
+            "tmux",
+            "set-hook",
+            "-t",
+            session_name,
+            "client-detached",
+            f"run-shell 'bash {cleanup_script} #{{session_name}}'",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
 pane_target = f"{session_name}:0.0"
-subprocess.run(["tmux", "pipe-pane", "-o", "-t", pane_target, f"cat >> {shlex.quote(log_path)}"], check=True)
+pipe_command = (
+    f"python3 {shlex.quote(str(tool_activity_wrapper))} "
+    f"--log-path {shlex.quote(log_path)} "
+    f"--tool-activity-path {shlex.quote(tool_activity_path)}"
+)
+subprocess.run(["tmux", "pipe-pane", "-o", "-t", pane_target, pipe_command], check=True)
 pane_id = subprocess.run(
     ["tmux", "display-message", "-p", "-t", pane_target, "#{pane_id}"],
     text=True,
@@ -133,6 +169,7 @@ pane_pid = subprocess.run(
 launch.update(
     {
         "log_path": log_path,
+        "tool_activity_path": tool_activity_path,
         "session_name": session_name,
         "window_index": "0",
         "pane_id": pane_id,
@@ -140,7 +177,8 @@ launch.update(
         "last_restart_reason": os.environ["REASON_ENV"],
     }
 )
-launch_file.write_text(json.dumps(launch, ensure_ascii=False, indent=2), encoding="utf-8")
+for path in (launch_file, latest_launch_file):
+    path.write_text(json.dumps(launch, ensure_ascii=False, indent=2), encoding="utf-8")
 
 print(json.dumps({"session_name": session_name, "pane_id": pane_id, "log_path": log_path}, ensure_ascii=False))
 PY
@@ -149,4 +187,4 @@ PY
 parse_args "$@"
 load_launch_metadata
 archive_old_session >/dev/null
-create_replacement_session
+SESSION_RUNTIME_DIR_ENV="$SESSION_RUNTIME_DIR" create_replacement_session

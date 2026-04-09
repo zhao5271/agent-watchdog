@@ -6,8 +6,10 @@ if [[ -z "${TASK_COMMAND_B64:-}" ]]; then
   exit 1
 fi
 
+TASK_RUNNER_START_DELAY="${TASK_RUNNER_START_DELAY:-0.2}"
 TASK_COMMAND="$(printf '%s' "$TASK_COMMAND_B64" | base64 --decode)"
 
+sleep "$TASK_RUNNER_START_DELAY"
 bash -lc "$TASK_COMMAND"
 EXIT_CODE=$?
 

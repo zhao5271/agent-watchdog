@@ -18,10 +18,6 @@ from typing import Any
 
 BASE_DIR = Path("/Users/zhang/Desktop/agent-watchdog")
 RUNTIME_DIR = BASE_DIR / "runtime"
-STATUS_FILE = RUNTIME_DIR / "status.json"
-EVENTS_FILE = RUNTIME_DIR / "events.log"
-PID_FILE = RUNTIME_DIR / "watchdog.pid"
-LAUNCH_FILE = RUNTIME_DIR / "launch.json"
 TMUX_RESTART_SCRIPT = BASE_DIR / "scripts" / "tmux_restart.sh"
 
 EXIT_CODE_PATTERN = re.compile(r"__TASK_EXIT_CODE__=(\d+)")
@@ -51,10 +47,10 @@ def write_json(path: Path, data: Any) -> None:
         json.dump(data, handle, ensure_ascii=False, indent=2)
 
 
-def append_event(event_type: str, payload: dict[str, Any]) -> None:
-    EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+def append_event(events_file: Path, event_type: str, payload: dict[str, Any]) -> None:
+    events_file.parent.mkdir(parents=True, exist_ok=True)
     event = {"time": now_iso(), "type": event_type, **payload}
-    with EVENTS_FILE.open("a", encoding="utf-8") as handle:
+    with events_file.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
@@ -199,6 +195,8 @@ def restart_cooldown_passed(status: dict[str, Any]) -> bool:
 
 
 def should_attempt_restart(status: dict[str, Any]) -> bool:
+    if should_stop_on_client_session_end(status):
+        return False
     if status.get("status") not in RESTARTABLE_STATUSES:
         return False
     if not status.get("auto_restart"):
@@ -206,6 +204,10 @@ def should_attempt_restart(status: dict[str, Any]) -> bool:
     if int(status.get("restart_count", 0)) >= int(status.get("max_restarts", 0)):
         return False
     return restart_cooldown_passed(status)
+
+
+def should_stop_on_client_session_end(status: dict[str, Any]) -> bool:
+    return bool(status.get("destroy_unattached")) and not bool(status.get("tmux_session_exists"))
 
 
 def build_initial_status(config: dict[str, Any], stage_order: list[str]) -> dict[str, Any]:
@@ -237,6 +239,7 @@ def build_initial_status(config: dict[str, Any], stage_order: list[str]) -> dict
         "restart_command": restart_command,
         "restart_count": 0,
         "max_restarts": int(config.get("max_restarts", 0)),
+        "destroy_unattached": bool(config.get("destroy_unattached", False)),
         "auto_restart": bool(config.get("auto_restart", False)),
         "last_restart_at": "",
         "last_restart_attempt_at": "",
@@ -258,8 +261,8 @@ def build_initial_status(config: dict[str, Any], stage_order: list[str]) -> dict
     }
 
 
-def read_launch_metadata() -> dict[str, Any]:
-    return read_json(LAUNCH_FILE, {})
+def read_launch_metadata(launch_file: Path) -> dict[str, Any]:
+    return read_json(launch_file, {})
 
 
 def sync_status_with_launch(status: dict[str, Any], launch: dict[str, Any]) -> None:
@@ -272,9 +275,12 @@ def sync_status_with_launch(status: dict[str, Any], launch: dict[str, Any]) -> N
     status["tmux_pane_id"] = str(launch.get("pane_id", status.get("tmux_pane_id", "")))
     status["auto_restart"] = bool(launch.get("auto_restart", status.get("auto_restart", False)))
     status["max_restarts"] = int(launch.get("max_restarts", status.get("max_restarts", 0)))
+    status["destroy_unattached"] = bool(launch.get("destroy_unattached", status.get("destroy_unattached", False)))
     status["soft_timeout_seconds"] = int(launch.get("soft_timeout_seconds", status.get("soft_timeout_seconds", 0)))
     status["hard_timeout_seconds"] = int(launch.get("hard_timeout_seconds", status.get("hard_timeout_seconds", 0)))
-    status["restart_command"] = f"bash {shlex.quote(str(TMUX_RESTART_SCRIPT))}"
+    restart_command = str(launch.get("restart_command", status.get("restart_command", ""))).strip()
+    if restart_command:
+        status["restart_command"] = restart_command
 
 
 def update_tmux_fields(status: dict[str, Any], tmux_info: dict[str, Any]) -> None:
@@ -348,7 +354,9 @@ def classify_status(
 
 def attempt_restart(status: dict[str, Any], reason: str) -> tuple[bool, str]:
     archive_session = str(status.get("tmux_session", ""))
-    command = ["bash", str(TMUX_RESTART_SCRIPT), "--reason", reason]
+    restart_command = str(status.get("restart_command", "")).strip()
+    command = shlex.split(restart_command) if restart_command else ["bash", str(TMUX_RESTART_SCRIPT)]
+    command.extend(["--reason", reason])
     if archive_session:
         command.extend(["--archive-session", archive_session])
 
@@ -361,21 +369,27 @@ def attempt_restart(status: dict[str, Any], reason: str) -> tuple[bool, str]:
 
 
 def run_watchdog(config: dict[str, Any]) -> None:
-    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    write_json(PID_FILE, {"pid": os.getpid(), "started_at": now_iso()})
+    runtime_dir = Path(str(config.get("runtime_dir", RUNTIME_DIR)))
+    status_file = runtime_dir / "status.json"
+    events_file = runtime_dir / "events.log"
+    pid_file = runtime_dir / "watchdog.pid"
+    launch_file = runtime_dir / "launch.json"
+
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    write_json(pid_file, {"pid": os.getpid(), "started_at": now_iso()})
 
     stage_rules = read_json(Path(config["stage_rules"]), [])
     stage_order = [str(rule["stage"]) for rule in stage_rules]
     status = build_initial_status(config, stage_order)
-    write_json(STATUS_FILE, status)
-    append_event("watchdog_started", {"task_id": config["task_id"]})
+    write_json(status_file, status)
+    append_event(events_file, "watchdog_started", {"task_id": config["task_id"]})
 
     previous_lines: list[str] = []
     started_ts = time.time()
     last_activity_ts = started_ts
 
     while True:
-        launch = read_launch_metadata()
+        launch = read_launch_metadata(launch_file)
         sync_status_with_launch(status, launch)
 
         tmux_info = get_tmux_pane_info(status.get("tmux_session", ""), status.get("tmux_pane_id", ""))
@@ -399,6 +413,7 @@ def run_watchdog(config: dict[str, Any]) -> None:
             next_stage = infer_stage(lines, stage_rules, status["stage"])
             if next_stage != status["stage"]:
                 append_event(
+                    events_file,
                     "stage_changed",
                     {
                         "task_id": config["task_id"],
@@ -414,6 +429,22 @@ def run_watchdog(config: dict[str, Any]) -> None:
         exit_code = parse_exit_code(lines)
         classify_status(status, alive=alive, exit_code=exit_code)
 
+        if should_stop_on_client_session_end(status):
+            status["status"] = "stopped"
+            status["stopped"] = True
+            status["suggest_restart"] = False
+            status["suggestion"] = "attached 会话已关闭，任务随终端结束"
+            write_json(status_file, status)
+            append_event(
+                events_file,
+                "attached_session_closed",
+                {
+                    "task_id": status["task_id"],
+                    "tmux_session": status.get("tmux_session", ""),
+                },
+            )
+            break
+
         if should_attempt_restart(status):
             ok, detail = attempt_restart(status, status["status"])
             if ok:
@@ -421,6 +452,7 @@ def run_watchdog(config: dict[str, Any]) -> None:
                 status["last_restart_at"] = now_iso()
                 status["last_restart_reason"] = status["status"]
                 append_event(
+                    events_file,
                     "task_restarted",
                     {
                         "task_id": status["task_id"],
@@ -429,7 +461,7 @@ def run_watchdog(config: dict[str, Any]) -> None:
                         "restart_count": status["restart_count"],
                     },
                 )
-                launch = read_launch_metadata()
+                launch = read_launch_metadata(launch_file)
                 sync_status_with_launch(status, launch)
                 previous_lines = []
                 started_ts = time.time()
@@ -447,6 +479,7 @@ def run_watchdog(config: dict[str, Any]) -> None:
                 status["last_error"] = detail
                 status["suggestion"] = f"自动重启失败: {detail}"
                 append_event(
+                    events_file,
                     "restart_failed",
                     {
                         "task_id": status["task_id"],
@@ -455,13 +488,14 @@ def run_watchdog(config: dict[str, Any]) -> None:
                     },
                 )
 
-        write_json(STATUS_FILE, status)
+        write_json(status_file, status)
         time.sleep(int(config["poll_interval_seconds"]))
 
 
 def start(args: argparse.Namespace) -> None:
     config = {
         "task_id": args.task_id,
+        "runtime_dir": args.runtime_dir,
         "task_name": args.task_name,
         "pid": args.pid,
         "log_path": args.log_path,
@@ -477,12 +511,14 @@ def start(args: argparse.Namespace) -> None:
         "tmux_pane_id": args.tmux_pane_id,
         "auto_restart": args.auto_restart,
         "max_restarts": args.max_restarts,
+        "destroy_unattached": args.destroy_unattached,
     }
     run_watchdog(config)
 
 
 def stop(_args: argparse.Namespace) -> None:
-    pid_info = read_json(PID_FILE, {})
+    runtime_dir = Path(str(_args.runtime_dir))
+    pid_info = read_json(runtime_dir / "watchdog.pid", {})
     pid = pid_info.get("pid")
     if not pid:
         print("未找到 watchdog 进程")
@@ -496,13 +532,14 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     start_parser = subparsers.add_parser("start")
+    start_parser.add_argument("--runtime-dir", default=str(RUNTIME_DIR))
     start_parser.add_argument("--task-id", required=True)
     start_parser.add_argument("--task-name", required=True)
     start_parser.add_argument("--pid", type=int, required=True)
     start_parser.add_argument("--log-path", required=True)
     start_parser.add_argument("--soft-timeout", type=int, default=300)
     start_parser.add_argument("--hard-timeout", type=int, default=900)
-    start_parser.add_argument("--poll-interval", type=int, default=5)
+    start_parser.add_argument("--poll-interval", type=int, default=1)
     start_parser.add_argument("--restart-command", default="")
     start_parser.add_argument("--source", default="custom")
     start_parser.add_argument("--project", default="")
@@ -511,12 +548,14 @@ def main() -> None:
     start_parser.add_argument("--tmux-pane-id", default="")
     start_parser.add_argument("--auto-restart", action="store_true")
     start_parser.add_argument("--max-restarts", type=int, default=3)
+    start_parser.add_argument("--destroy-unattached", action="store_true")
     start_parser.add_argument(
         "--stage-rules",
         default=str(BASE_DIR / "config" / "stage-rules.json"),
     )
 
     stop_parser = subparsers.add_parser("stop")
+    stop_parser.add_argument("--runtime-dir", default=str(RUNTIME_DIR))
     stop_parser.set_defaults(func=stop)
 
     args = parser.parse_args()

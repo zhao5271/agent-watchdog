@@ -5,20 +5,25 @@ BASE_DIR="/Users/zhang/Desktop/agent-watchdog"
 RUNTIME_DIR="$BASE_DIR/runtime"
 START_WATCHDOG_SCRIPT="$BASE_DIR/scripts/start_watchdog.sh"
 TASK_RUNNER_SCRIPT="$BASE_DIR/scripts/tmux_task_runner.sh"
-LAUNCH_FILE="$RUNTIME_DIR/launch.json"
+TOOL_ACTIVITY_WRAPPER_SCRIPT="$BASE_DIR/scripts/tool_activity_wrapper.py"
+LATEST_LAUNCH_FILE="$RUNTIME_DIR/launch.json"
+LAUNCH_FILE=""
 
 TASK_ID=""
 TASK_NAME=""
 TASK_COMMAND=""
+SESSION_RUNTIME_DIR=""
 LOG_PATH=""
+TOOL_ACTIVITY_PATH=""
 SESSION_PREFIX="agent"
 SOURCE="custom"
 PROJECT=""
 SOFT_TIMEOUT=300
 HARD_TIMEOUT=900
-POLL_INTERVAL=5
+POLL_INTERVAL=1
 MAX_RESTARTS=3
 STAGE_RULES="$BASE_DIR/config/stage-rules.json"
+DESTROY_UNATTACHED="off"
 
 usage() {
   cat <<'EOF'
@@ -33,6 +38,7 @@ usage() {
     [--hard-timeout 900] \
     [--poll-interval 5] \
     [--max-restarts 3] \
+    [--destroy-unattached off] \
     [--source custom] \
     [--project ""]
 EOF
@@ -81,6 +87,10 @@ parse_args() {
         MAX_RESTARTS="$2"
         shift 2
         ;;
+      --destroy-unattached)
+        DESTROY_UNATTACHED="$2"
+        shift 2
+        ;;
       --source)
         SOURCE="$2"
         shift 2
@@ -119,12 +129,18 @@ create_session() {
   safe_task_id="$(sanitize_task_id "$TASK_ID")"
   timestamp="$(date '+%Y%m%d-%H%M%S')"
   session_name="${SESSION_PREFIX}-${safe_task_id}-${timestamp}"
+  SESSION_RUNTIME_DIR="$RUNTIME_DIR/sessions/$session_name"
+  LAUNCH_FILE="$SESSION_RUNTIME_DIR/launch.json"
 
-  mkdir -p "$RUNTIME_DIR"
+  mkdir -p "$SESSION_RUNTIME_DIR"
   if [[ -z "$LOG_PATH" ]]; then
-    LOG_PATH="$RUNTIME_DIR/${safe_task_id}-${timestamp}.log"
+    LOG_PATH="$SESSION_RUNTIME_DIR/${safe_task_id}-${timestamp}.log"
+  fi
+  if [[ -z "$TOOL_ACTIVITY_PATH" ]]; then
+    TOOL_ACTIVITY_PATH="$SESSION_RUNTIME_DIR/tool_activity.jsonl"
   fi
   : > "$LOG_PATH"
+  : > "$TOOL_ACTIVITY_PATH"
 
   command_b64="$(printf '%s' "$TASK_COMMAND" | base64 | tr -d '\n')"
 
@@ -133,7 +149,13 @@ create_session() {
   tmux set-option -t "$session_name" remain-on-exit on >/dev/null
 
   pane_target="${session_name}:0.0"
-  pipe_command="cat >> $(printf '%q' "$LOG_PATH")"
+  pipe_command="$(
+    printf '%q --log-path %q --tool-activity-path %q' \
+      "$TOOL_ACTIVITY_WRAPPER_SCRIPT" \
+      "$LOG_PATH" \
+      "$TOOL_ACTIVITY_PATH"
+  )"
+  pipe_command="python3 $pipe_command"
   tmux pipe-pane -o -t "$pane_target" "$pipe_command"
 
   pane_id="$(tmux display-message -p -t "$pane_target" '#{pane_id}')"
@@ -142,7 +164,9 @@ create_session() {
   TASK_ID_ENV="$TASK_ID" \
   TASK_NAME_ENV="$TASK_NAME" \
   TASK_COMMAND_ENV="$TASK_COMMAND" \
+  SESSION_RUNTIME_DIR_ENV="$SESSION_RUNTIME_DIR" \
   LOG_PATH_ENV="$LOG_PATH" \
+  TOOL_ACTIVITY_PATH_ENV="$TOOL_ACTIVITY_PATH" \
   SESSION_NAME_ENV="$session_name" \
   PANE_ID_ENV="$pane_id" \
   PANE_PID_ENV="$pane_pid" \
@@ -151,20 +175,25 @@ create_session() {
   HARD_TIMEOUT_ENV="$HARD_TIMEOUT" \
   POLL_INTERVAL_ENV="$POLL_INTERVAL" \
   MAX_RESTARTS_ENV="$MAX_RESTARTS" \
+  DESTROY_UNATTACHED_ENV="$DESTROY_UNATTACHED" \
   SOURCE_ENV="$SOURCE" \
   PROJECT_ENV="$PROJECT" \
   STAGE_RULES_ENV="$STAGE_RULES" \
   LAUNCH_FILE_ENV="$LAUNCH_FILE" \
+  LATEST_LAUNCH_FILE_ENV="$LATEST_LAUNCH_FILE" \
   python3 - <<'PY'
 import json
 import os
 from pathlib import Path
+base_dir = "/Users/zhang/Desktop/agent-watchdog"
 
 launch = {
     "task_id": os.environ["TASK_ID_ENV"],
     "task_name": os.environ["TASK_NAME_ENV"],
     "command": os.environ["TASK_COMMAND_ENV"],
+    "runtime_dir": os.environ["SESSION_RUNTIME_DIR_ENV"],
     "log_path": os.environ["LOG_PATH_ENV"],
+    "tool_activity_path": os.environ["TOOL_ACTIVITY_PATH_ENV"],
     "session_name": os.environ["SESSION_NAME_ENV"],
     "window_index": "0",
     "pane_id": os.environ["PANE_ID_ENV"],
@@ -174,19 +203,24 @@ launch = {
     "hard_timeout_seconds": int(os.environ["HARD_TIMEOUT_ENV"]),
     "poll_interval_seconds": int(os.environ["POLL_INTERVAL_ENV"]),
     "max_restarts": int(os.environ["MAX_RESTARTS_ENV"]),
+    "destroy_unattached": os.environ["DESTROY_UNATTACHED_ENV"].lower() == "on",
     "auto_restart": True,
+    "restart_command": f"bash {base_dir}/scripts/tmux_restart.sh --runtime-dir {os.environ['SESSION_RUNTIME_DIR_ENV']}",
     "source": os.environ["SOURCE_ENV"],
     "project": os.environ["PROJECT_ENV"],
     "stage_rules": os.environ["STAGE_RULES_ENV"],
 }
 
-Path(os.environ["LAUNCH_FILE_ENV"]).write_text(
-    json.dumps(launch, ensure_ascii=False, indent=2),
-    encoding="utf-8",
-)
+for path_env in ("LAUNCH_FILE_ENV", "LATEST_LAUNCH_FILE_ENV"):
+    Path(os.environ[path_env]).parent.mkdir(parents=True, exist_ok=True)
+    Path(os.environ[path_env]).write_text(
+        json.dumps(launch, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 PY
 
   bash "$START_WATCHDOG_SCRIPT" \
+    --runtime-dir "$SESSION_RUNTIME_DIR" \
     --task-id "$TASK_ID" \
     --task-name "$TASK_NAME" \
     --pid "$pane_pid" \
@@ -194,7 +228,7 @@ PY
     --soft-timeout "$SOFT_TIMEOUT" \
     --hard-timeout "$HARD_TIMEOUT" \
     --poll-interval "$POLL_INTERVAL" \
-    --restart-command "bash $BASE_DIR/scripts/tmux_restart.sh" \
+    --restart-command "bash $BASE_DIR/scripts/tmux_restart.sh --runtime-dir $SESSION_RUNTIME_DIR" \
     --source "$SOURCE" \
     --project "$PROJECT" \
     --stage-rules "$STAGE_RULES" \
@@ -202,11 +236,14 @@ PY
     --tmux-window "0" \
     --tmux-pane-id "$pane_id" \
     --auto-restart \
-    --max-restarts "$MAX_RESTARTS"
+    --max-restarts "$MAX_RESTARTS" \
+    $( [[ "$DESTROY_UNATTACHED" == "on" ]] && printf '%s' "--destroy-unattached" )
 
   echo "tmux session: $session_name"
+  echo "runtime dir: $SESSION_RUNTIME_DIR"
   echo "pane id: $pane_id"
   echo "log path: $LOG_PATH"
+  echo "tool activity path: $TOOL_ACTIVITY_PATH"
 }
 
 parse_args "$@"
