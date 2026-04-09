@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_DIR="/Users/zhang/Desktop/agent-watchdog"
+TMUX_LAUNCH_SCRIPT="$BASE_DIR/scripts/tmux_launch.sh"
+
+SOFT_TIMEOUT="${AWW_SOFT_TIMEOUT:-300}"
+HARD_TIMEOUT="${AWW_HARD_TIMEOUT:-900}"
+POLL_INTERVAL="${AWW_POLL_INTERVAL:-5}"
+MAX_RESTARTS="${AWW_MAX_RESTARTS:-3}"
+TASK_NAME="${AWW_TASK_NAME:-Agent 任务}"
+SESSION_PREFIX="${AWW_SESSION_PREFIX:-agent}"
+SOURCE="${AWW_SOURCE:-aww}"
+PROJECT="${AWW_PROJECT:-$PWD}"
+STAGE_RULES="${AWW_STAGE_RULES:-$BASE_DIR/config/stage-rules.json}"
+
+usage() {
+  cat <<'EOF'
+用法:
+  aww "你的命令"
+
+示例:
+  aww "python3 app.py"
+  aww "npm test"
+
+可选环境变量:
+  AWW_TASK_NAME
+  AWW_SOFT_TIMEOUT
+  AWW_HARD_TIMEOUT
+  AWW_POLL_INTERVAL
+  AWW_MAX_RESTARTS
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+if [[ ! -x "$TMUX_LAUNCH_SCRIPT" ]]; then
+  echo "错误：未找到 tmux 启动脚本：$TMUX_LAUNCH_SCRIPT"
+  exit 1
+fi
+
+COMMAND="$*"
+TASK_ID="aww-$(date '+%Y%m%d-%H%M%S')"
+
+echo "启动 aww 任务"
+echo "任务ID: $TASK_ID"
+echo "命令: $COMMAND"
+
+bash "$TMUX_LAUNCH_SCRIPT" \
+  --task-id "$TASK_ID" \
+  --task-name "$TASK_NAME" \
+  --command "$COMMAND" \
+  --session-prefix "$SESSION_PREFIX" \
+  --soft-timeout "$SOFT_TIMEOUT" \
+  --hard-timeout "$HARD_TIMEOUT" \
+  --poll-interval "$POLL_INTERVAL" \
+  --max-restarts "$MAX_RESTARTS" \
+  --source "$SOURCE" \
+  --project "$PROJECT" \
+  --stage-rules "$STAGE_RULES"

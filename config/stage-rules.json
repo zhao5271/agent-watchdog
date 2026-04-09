@@ -1,0 +1,82 @@
+[
+  {
+    "stage": "准备中",
+    "keywords": [
+      "初始化",
+      "加载",
+      "读取",
+      "准备",
+      "bootstrap",
+      "starting",
+      "setup",
+      "启动",
+      "usage:",
+      "print help",
+      "loading",
+      "resolving",
+      "connecting"
+    ]
+  },
+  {
+    "stage": "执行中",
+    "keywords": [
+      "实现",
+      "修改",
+      "生成",
+      "处理中",
+      "running",
+      "执行",
+      "分析",
+      "导入",
+      "apply",
+      "render",
+      "editing",
+      "patch",
+      "search",
+      "open",
+      "click",
+      "spawn_agent",
+      "write_stdin",
+      "exec_command",
+      "processing",
+      "building feature"
+    ]
+  },
+  {
+    "stage": "验证中",
+    "keywords": [
+      "test",
+      "build",
+      "验证",
+      "检查",
+      "构建",
+      "lint",
+      "校验",
+      "编译",
+      "测试",
+      "pytest",
+      "go test",
+      "npm test",
+      "npm run build",
+      "vite build",
+      "wails build",
+      "verifying"
+    ]
+  },
+  {
+    "stage": "完成",
+    "keywords": [
+      "完成",
+      "成功",
+      "通过",
+      "done",
+      "success",
+      "finished",
+      "completed",
+      "all tests pass",
+      "build passes",
+      "task complete",
+      "process exited with code 0"
+    ]
+  }
+]

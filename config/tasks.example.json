@@ -1,0 +1,15 @@
+{
+  "tasks": [
+    {
+      "task_id": "home-redesign",
+      "task_name": "首页结果工作台重构",
+      "source": "codex",
+      "project": "my-drawio",
+      "pid": 12345,
+      "log_path": "/tmp/home-redesign.log",
+      "soft_timeout_seconds": 300,
+      "hard_timeout_seconds": 900,
+      "restart_command": "codex resume-task home-redesign"
+    }
+  ]
+}
